@@ -1,0 +1,434 @@
+---
+title: "Lecture 4 codes"
+output: rmarkdown::github_document
+---
+
+## Let us continue using the IMDB movie dataset from Lecture 4
+
+I borrow last week's codes to preprocess the data
+
+- turning texts into corpus
+- proprocessing corpus (stemming, removing punctuation, url, stopwords, and use up to 2-grams)
+
+(read the helpfile carefully for how you can choose n-gram and removing stopwords. It cannot be done in the same step within `dfm` in this package. I first generate tokens and then construct the document-term matrix.
+
+```{r, message=F}
+library(quanteda)
+library(data.table) # this package help you to read large files quicker
+reviews <- fread("../lec4-text-basics/train.csv") # fread() is a function in data.table
+reviews$label <- reviews$label # coerce 0/1 to category
+# text to corpus
+twcorpus <- corpus(reviews$text)
+# the below commented lien won't work; read the help file
+# doc.term <- dfm(twcorpus,  ngrams=1:3, tolower=TRUE, stem=TRUE, remove_punct = TRUE, remove_url=TRUE,  verbose=TRUE, remove=c(stopwords("english"), "the", "t.co", "https", "rt", "amp", "http", "t.c", "can", "u", "<", ">", "br"))
+
+# transform corpus to tokens
+tokens <-  tokens(twcorpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tokens <- tokens_remove(tokens, c(stopwords("english"), "the", "t.co", "https", "rt", "amp", "http", "t.c", "can", "u", "<", ">", "br", " ")) 
+tokens <- tokens_wordstem(tokens)
+tokens <- tokens_ngrams(tokens, n = 1:2, concatenator = ".")
+
+# then generate document-
+doc.term <- dfm(tokens,  verbose=TRUE)
+print (dim(doc.term))
+
+# and discard too infrequent words; 
+doc.term <- dfm_trim(doc.term, min_docfreq=50, verbose=TRUE)
+print (dim(doc.term))
+```
+
+We end up with a data matrix with size 40000 * 11686.
+
+
+
+## train/validation/test split to select parameters
+
+
+- training data (70%)
+- validation (10%)
+
+
+
+- test data (20%)
+  - in real projects, the proportion of test data is usually *much more than 20%*. The test data are usually the majority of the data that you do not want to label by yourself
+  - Here we set it to 20% for learning purpose.
+  
+
+
+```{r}
+# n_train is the number of training data
+n_test <- round (nrow(doc.term) * 0.2)
+n_train <- round(nrow(doc.term) * 0.7)
+
+
+# first set up test data 
+test_index <- sample(1:nrow(doc.term), n_test, replace = FALSE)
+
+# what is left is the training and validation data
+train_and_val_index <- (1:nrow(doc.term))[-test_index]
+
+# further sample training data within (train and validation data)
+train_index <- sample(train_and_val_index, n_train, replace = FALSE)
+
+# the rest is test data
+val_index <- setdiff(train_and_val_index, train_index)
+
+
+## get train, val, and test data
+test_data <- doc.term[test_index, ]
+train_data <- doc.term[train_index, ]
+val_data <- doc.term[val_index, ]
+train_and_val_data <- doc.term[train_and_val_index, ]
+
+
+test_Y <- reviews[test_index]$label
+train_Y <- reviews[train_index]$label
+val_Y <- reviews[val_index]$label
+train_and_val_Y <- reviews[train_and_val_index]$label
+```
+
+
+## linear regression; won't work!
+
+### first, converting doc.term to matrix can take very long time; 
+
+This is because `data.frame` does not take into consideration that the data is sparse. It's not design to work with high-dimensional data.
+
+```{r}
+X <- convert(doc.term, to = "data.frame")
+X <- as.data.frame(doc.term)
+## the first column is doc_id so I remove tat
+X <- X[,2:ncol(X)]
+```
+
+
+now we use the document-term matrix (our $X$ now) to predict the outcome: sentiments.
+
+It's not going to work; crashes my computer a lot. 
+
+1. the speed of linear regression is extremely slow;
+2. R's lm() only allows you to use data.frame as input; since most elements in the matrix is 0, it takes a lot memory (8 to 10 times than the doc.term)
+
+- this will given another reason why you should not use linear regression, which relies on all features.
+```{r}
+# not run; too slow and memory intensive
+
+#  m.lm <- lm (reviews$label ~ as.matrix(X))
+```
+
+
+## LASSO
+
+We use `glmnet` package to run LASSO and Elastic Net.
+
+Read the help file and you will find that this packages use $\alpha$ to control the relative strength of LASSO and Ridge. 
+
+- Setting $\alpha$ = 1, we obtain LASSO estimator.
+- Setting $\alpha$ = 0, we obtain Ridge
+- if $0 < \alpha < 1$, we obtain Elastic net
+
+This link provides some great tutorial on leaning GLMNET.
+
+https://web.stanford.edu/~hastie/glmnet/glmnet_alpha.html
+
+
+I make an initial guess by setting $\lambda$ = 0.1.
+```{r}
+library(glmnet)
+m.lasso <- glmnet(train_and_val_data, train_and_val_Y, 
+    family="binomial", lambda = 0.01, alpha=1, intercept=TRUE)
+
+# print all regression coefficients here
+# m.lasso$beta
+
+```
+
+If you do not want to set the value of $\lambda$ by yourself, `glmnet` package can automatically set a list of $\lambda$ for you.
+
+```{r}
+
+m.lasso <- glmnet(train_and_val_data, train_and_val_Y,
+    family="binomial", nlambda = 20, alpha=1, intercept=TRUE)
+print (m.lasso, nlambda = 20)
+#m.lasso$beta
+```
+
+We plot $lambda$ against coefficient values. You can see that larger $\lambda$ values let more cofficient be 0.
+
+```{r}
+plot(m.lasso, xvar = "lambda", label = TRUE)
+
+m.lasso$beta
+
+```
+
+Predicting using Lambda is very easy.
+
+And we define some function to calculate accuracy, precision, and recall.
+
+here I am using my self-defined functions, just to demonstrate.
+
+You can also use other packages we mentioned in the last week's codes.
+
+```{r}
+## function to compute accuracy
+accuracy <- function(ypred, y){
+    tab <- table(ypred, y)
+    return(sum(diag(tab))/sum(tab))
+}
+# function to compute precision
+precision <- function(ypred, y){
+    tab <- table(ypred, y)
+    return((tab[2,2])/(tab[2,1]+tab[2,2]))
+}
+# function to compute recall
+recall <- function(ypred, y){
+    tab <- table(ypred, y)
+    return(tab[2,2]/(tab[1,2]+tab[2,2]))
+}
+
+F1 <- function(ypred, y){
+  prec <- precision (ypred, y)
+  rec <- recall (ypred, y)
+  return ( ( 2 * prec * rec) / (prec + rec))
+}
+```
+
+
+Let us do parameter selection now. 
+
+You can manually try several values of $\lambda$ and pick the one that yields the highest F1 score. This approach may omit many possibilities. 
+
+
+Here, we do a more systematicall way: grid-search.
+
+
+We generate a list of lambda, check the prediction performance on each of the $\lambda$ choice, and choose the specific $\lambda$ choice that yields the largest F1 score.
+
+
+```{r}
+lambda_list <- seq(0,0.01,0.002)
+
+F1.list <- c()
+
+## notice that I have used the newer training data for fitting this model
+for (each_lambda in lambda_list){
+  
+  m.lasso <- glmnet(train_data, train_Y, 
+    family="binomial", lambda = each_lambda, alpha=1)
+  
+  # predict and evaluate on the validation data
+  pred_y <- predict(m.lasso, newx = val_data, type="class")
+  head(pred_y)
+  
+  F1.list <- c(F1.list, F1(pred_y, val_Y))
+}
+
+plot(lambda_list, F1.list)
+```
+
+
+Cross-validation basically repeate the above procedure for multiple times, and average over the performance. For this package, you can use `cv.glmnet` to select the best lambda
+
+
+I did not use it earlier, because it does not allow you to choose based on F1 score. Only AUC is allowed.
+
+```{r}
+# use the original training data (without splitting to new train/validation)
+# the package will do that for you.
+cv.glmnet(train_and_val_data, train_and_val_Y, family="binomial", type.measure = "auc", alpha = 1, nfolds = 5)
+```
+
+
+Last, we can print out the model and see which word has more predictive power.
+```{r}
+m.lasso <- glmnet(test_data, test_Y, 
+    family="binomial", lambda = 0.002217, alpha=1)
+# m.lasso$beta
+
+```
+
+
+## performance of dictionary methods
+
+Let us try our the F1 score of dictionary methods.
+Below I basically construct the dictionary for the corpus (see last class' notes).
+
+
+```{r}
+pos.words <- read.csv("../lec4-text-basics/opinion-lexicon-English/positive-words.txt",
+                 stringsAsFactors = FALSE, header = FALSE)$V1
+
+neg.words <- read.csv("../lec4-text-basics/opinion-lexicon-English/negative-words.txt",
+                 stringsAsFactors = FALSE, header = FALSE)$V1
+
+mydict <- dictionary(list(positive = pos.words,
+                          negative = neg.words))
+
+```
+
+In the lecture slides we said that the pros and cons of dictionary methods is that it is not corpus specific. You just apply a dictionary and there is *no* learning process. As you see below, in order to make predictions on the validation data, we do not need the training data at all! We can directly calculate the predictions for the validation set.
+
+
+```{r}
+
+sent <- dfm(doc.term, dictionary = mydict)
+sent_val <- sent[val_index, ]
+
+pred_y_dict <- ifelse(as.numeric(sent_val[,1]) > as.numeric(sent_val[,2]), 1, 0)
+
+F1(pred_y_dict, val_Y)
+```
+
+LASSO gives significantly better performance than the dictionary methods.
+
+
+## tree and forest
+
+Now let us move to tree method. A common choice in R is to use `rpart` package, but unfortunately it does not take the type of sparse matrix. We have to limit our data a little bit to make it work (to demonstrate how it works).
+
+There are many other packages that implement decision trees, and I am not going to show that all. `tree`
+
+Decision tree algorithm is actually very slow; we limit the observation number to 1000 just to show you how it works, give that there is limited time in class. You can use full data and see how quick it is.
+
+```{r}
+
+X <- as.data.frame(train_data[1:1000,])
+
+# X <- convert(train_data[1:1000,], to = "data.frame")
+# the first column is doc_id so I remove tat
+X <- as.matrix(X[,2:ncol(X)])
+# X <- data.frame(y = as.character(train_Y), X)
+X <- data.frame(y = as.character(train_Y[1:1000]), X)
+```
+
+`cp` command is a parameter representing the degree of complexity. If you make this value smaller (0.01 or so), the tree will become bigger and have more branches.
+
+```{r}
+
+library(rpart)
+# Create a decision tree model
+m.tree <- rpart( y ~ ., 
+                 data = X , 
+                 minsplit = 50, #	the minimum number of observations that must exist in a node in order for a split to be attempted.
+                 cp=.03)
+print (m.tree)
+```
+
+
+```{r}
+# left is yes, and right is no
+plot(m.tree, uniform=TRUE)
+text(m.tree, use.n=TRUE, all=TRUE, cex=.6)
+
+```
+
+or you can use fancyRpartPlot (very slow but more beautiful)
+
+```{r}
+library(rattle)
+fancyRpartPlot(m.tree, caption = NULL)
+```
+
+
+How do we read this plot?
+- on top; it suggests that 522 are 0 and 478 are 1.
+- numbers inside:
+  - first row: predicted nubmer at this level
+  - second row: accuracy of each category
+  - row 3: proportion of total number of observations
+
+
+We can predict with the tree, but since the training data only 1000 samples, the performance is likely to be  bad.
+
+```{r}
+X_val <-  convert(val_data, to = "data.frame")
+## there is some weird name errors during transforamtion
+## coerce the column names of X_val to be the same of the training data X
+# table(names(X) == names(X_val))
+
+colnames(X_val) <- c("doc_id", colnames(X)[2:ncol(X)])
+
+```
+
+
+```{r}
+
+pred_y_decisiontree <- predict(m.tree, X_val, type = "class")
+F1(pred_y_decisiontree, val_Y)
+```
+
+It's still better than dictionary methods, even though we only used 1000 training data.
+
+
+## Random forests
+
+even slower; of course
+
+And this algorithm is very delicate! So be careful.
+
+Typically we are going to select several hundreds. but here I am just seleting 2 (so the performance may be worse than single tree, since we do not use all variables).
+
+```{r}
+library(randomForest)
+m.rf = randomForest(y ~., data=X, ntree=2, nodesize = 20, proximity=F)
+
+```
+
+Then predict, again
+```{r}
+pred_y_rf <- predict(m.rf, X_val, type = "class")
+F1(pred_y_rf, val_Y)
+```
+
+To accelerate the process, I used an advanced programming techniques called parallel processing.
+It uses multiple cores in your computer to grow trees simultaneously. 
+
+5 trees, per each core
+
+https://cran.r-project.org/web/packages/foreach/vignettes/foreach.html
+
+```{r}
+library(doParallel)
+library("foreach")
+
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+
+m.rf.parallel <- foreach(ntree = rep(5, detectCores()), .combine = combine, .packages = "randomForest") %dopar% {
+  randomForest(x = X[,2:ncol(X)], y = X$y, ntree = ntree, nodesize = 20, proximity=F)
+}
+stopCluster(cl)
+
+```
+
+
+```{r}
+pred_y_rf_parallel <- predict(m.rf, X_val, type = "class")
+F1(pred_y_rf_parallel, val_Y)
+```
+
+## SVM
+speed is still an issue..
+
+
+```{r}
+library(e1071)
+
+# use only 1000 training data
+m.svm <- svm(as.factor(y) ~., X,  kernel =
+"linear")
+# use full data if you have more resources.
+# m.svm <- svm(x = doc.term, y = reviews$label, kernel ="linear")
+
+summary(m.svm)
+```
+
+
+```{r}
+# test with train data
+pred_y_svm <- predict(m.svm, X_val)
+F1(pred_y_svm, val_Y)
+```
+
