@@ -13,9 +13,10 @@ I borrow last week's codes to preprocess the data
 (read the helpfile carefully for how you can choose n-gram and removing stopwords. It cannot be done in the same step within `dfm` in this package. I first generate tokens and then construct the document-term matrix.
 
 ```{r, message=F}
+
 library(quanteda)
 library(data.table) # this package help you to read large files quicker
-reviews <- fread("../lec4-text-basics/train.csv") # fread() is a function in data.table
+reviews <- fread("../lec4-text-basics-codes/train.csv") # fread() is a function in data.table
 reviews$label <- reviews$label # coerce 0/1 to category
 # text to corpus
 twcorpus <- corpus(reviews$text)
@@ -40,16 +41,13 @@ print (dim(doc.term))
 We end up with a data matrix with size 40000 * 11686.
 
 
-
 ## train/validation/test split to select parameters
 
 
 - training data (70%)
 - validation (10%)
-
-
-
 - test data (20%)
+
   - in real projects, the proportion of test data is usually *much more than 20%*. The test data are usually the majority of the data that you do not want to label by yourself
   - Here we set it to 20% for learning purpose.
   
@@ -59,7 +57,6 @@ We end up with a data matrix with size 40000 * 11686.
 # n_train is the number of training data
 n_test <- round (nrow(doc.term) * 0.2)
 n_train <- round(nrow(doc.term) * 0.7)
-
 
 # first set up test data 
 test_index <- sample(1:nrow(doc.term), n_test, replace = FALSE)
@@ -136,8 +133,7 @@ I make an initial guess by setting $\lambda$ = 0.1.
 ```{r}
 library(glmnet)
 m.lasso <- glmnet(train_and_val_data, train_and_val_Y, 
-    family="binomial", lambda = 0.01, alpha=1, intercept=TRUE)
-
+    family="binomial", lambda = 0.1, alpha=1, intercept=TRUE)
 # print all regression coefficients here
 # m.lasso$beta
 
@@ -150,7 +146,6 @@ If you do not want to set the value of $\lambda$ by yourself, `glmnet` package c
 m.lasso <- glmnet(train_and_val_data, train_and_val_Y,
     family="binomial", nlambda = 20, alpha=1, intercept=TRUE)
 print (m.lasso, nlambda = 20)
-#m.lasso$beta
 ```
 
 We plot $lambda$ against coefficient values. You can see that larger $\lambda$ values let more cofficient be 0.
@@ -207,7 +202,7 @@ We generate a list of lambda, check the prediction performance on each of the $\
 
 
 ```{r}
-lambda_list <- seq(0,0.01,0.002)
+lambda_list <- seq(0,0.02,0.001)
 
 F1.list <- c()
 
@@ -243,7 +238,7 @@ cv.glmnet(train_and_val_data, train_and_val_Y, family="binomial", type.measure =
 Last, we can print out the model and see which word has more predictive power.
 ```{r}
 m.lasso <- glmnet(test_data, test_Y, 
-    family="binomial", lambda = 0.002217, alpha=1)
+    family="binomial", lambda = 0.002015, alpha=1)
 # m.lasso$beta
 
 ```
@@ -256,10 +251,10 @@ Below I basically construct the dictionary for the corpus (see last class' notes
 
 
 ```{r}
-pos.words <- read.csv("../lec4-text-basics/opinion-lexicon-English/positive-words.txt",
+pos.words <- read.csv("../lec4-text-basics-codes/opinion-lexicon-English/positive-words.txt",
                  stringsAsFactors = FALSE, header = FALSE)$V1
 
-neg.words <- read.csv("../lec4-text-basics/opinion-lexicon-English/negative-words.txt",
+neg.words <- read.csv("../lec4-text-basics-codes/opinion-lexicon-English/negative-words.txt",
                  stringsAsFactors = FALSE, header = FALSE)$V1
 
 mydict <- dictionary(list(positive = pos.words,
@@ -285,7 +280,9 @@ LASSO gives significantly better performance than the dictionary methods.
 
 ## tree and forest
 
-Now let us move to tree method. A common choice in R is to use `rpart` package, but unfortunately it does not take the type of sparse matrix. We have to limit our data a little bit to make it work (to demonstrate how it works).
+Now let us move to tree method. A common choice in R is to use `rpart` package, but unfortunately it does not take the type of sparse matrix. 
+
+We have to limit our data a little bit to make it work (to demonstrate how it works).
 
 There are many other packages that implement decision trees, and I am not going to show that all. `tree`
 
@@ -310,7 +307,7 @@ library(rpart)
 # Create a decision tree model
 m.tree <- rpart( y ~ ., 
                  data = X , 
-                 minsplit = 50, #	the minimum number of observations that must exist in a node in order for a split to be attempted.
+                 minsplit = 5, #	the minimum number of observations that must exist in a node in order for a split to be attempted.
                  cp=.03)
 print (m.tree)
 ```
@@ -371,7 +368,7 @@ Typically we are going to select several hundreds. but here I am just seleting 2
 
 ```{r}
 library(randomForest)
-m.rf = randomForest(y ~., data=X, ntree=2, nodesize = 20, proximity=F)
+# m.rf = randomForest(y ~., data=X, ntree=2, nodesize = 20, proximity=F)
 
 ```
 
@@ -397,7 +394,9 @@ registerDoParallel(cl)
 
 
 m.rf.parallel <- foreach(ntree = rep(5, detectCores()), .combine = combine, .packages = "randomForest") %dopar% {
+  
   randomForest(x = X[,2:ncol(X)], y = X$y, ntree = ntree, nodesize = 20, proximity=F)
+  
 }
 stopCluster(cl)
 
