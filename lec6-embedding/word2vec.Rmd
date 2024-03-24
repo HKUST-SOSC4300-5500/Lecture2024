@@ -1,0 +1,30 @@
+---
+title: "word2vec"
+author: "Han Zhang"
+date: '2023-03-12'
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(quanteda)
+library(Rtsne)
+
+library(data.table) # this package help you to read large files quicker
+reviews <- fread("../lec4-text-basics-codes/train.csv") # fread() is a function in data.table
+reviews$label <- reviews$label # coerce 0/1 to category
+
+```
+
+# https://cran.r-project.org/web/packages/word2vec/readme/README.html
+
+```{r}
+library(word2vec)
+set.seed(123456789)
+model <- word2vec(reviews[1:100,]$text, type = "cbow", dim = 15, iter = 20)
+embedding <- as.matrix(model)
+# embedding <- predict(model, c("completely", "abs"), type = "embedding")
+lookslike <- predict(model, c("completely", "absolutely"), type = "nearest", top_n = 5)
+lookslike
+```
+

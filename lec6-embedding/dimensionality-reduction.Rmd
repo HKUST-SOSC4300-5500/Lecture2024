@@ -1,0 +1,87 @@
+---
+author: "Han Zhang"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(quanteda)
+library(Rtsne)
+
+library(data.table) # this package help you to read large files quicker
+reviews <- fread("../lec4-text-basics-codes/train.csv") # fread() is a function in data.table
+reviews$label <- reviews$label # coerce 0/1 to category
+# text to corpus
+twcorpus <- corpus(reviews$text)
+# the below commented lien won't work; read the help file
+# doc.term <- dfm(twcorpus,  ngrams=1:3, tolower=TRUE, stem=TRUE, remove_punct = TRUE, remove_url=TRUE,  verbose=TRUE, remove=c(stopwords("english"), "the", "t.co", "https", "rt", "amp", "http", "t.c", "can", "u", "<", ">", "br"))
+
+# transform corpus to tokens
+tokens <-  tokens(twcorpus, remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, remove_url = TRUE)
+tokens <- tokens_remove(tokens, c(stopwords("english"), "the", "t.co", "https", "rt", "amp", "http", "t.c", "can", "u", "<", ">", "br", " ")) 
+tokens <- tokens_wordstem(tokens)
+tokens <- tokens_ngrams(tokens, n = 1, concatenator = ".")
+
+# then generate document-
+doc.term <- dfm(tokens,  verbose=TRUE)
+print (dim(doc.term))
+
+# and discard too infrequent words; 
+doc.term <- dfm_trim(doc.term, min_docfreq=500, verbose=TRUE)
+print (dim(doc.term))
+```
+
+```{r}
+X <- as.matrix(doc.term)
+```
+
+
+## pca
+
+The native implementation is really slow..
+
+You have to search for quicker alternatives. This is something you should try if your algorithm is too slow: just google XXX algorithm + fast implementation.
+Sometimes there will be faster versions; sometimes not.
+
+
+```{r}
+# r native function prcomp() is very slow
+# pc <- prcomp(X, scale = FALSE)
+```
+
+
+## select first 1500 documents
+- because we want to get vectors, but now each column is a word vector, we transpose it
+- now each row is a word vector
+```{r}
+library(gmodels)
+
+X_subset = t(X[1:1500, ])
+
+pc <- fast.prcomp(X_subset, retx = TRUE, center = TRUE, scale. = FALSE, tol = NULL)
+
+```
+
+```{r}
+# you can take first several principal components in this way
+pca_vector <- pc$x[,1:2]
+plot(pca_vector)
+pca_vector[pca_vector[,1]>30,]
+```
+
+tsne
+
+
+```{r}
+tsne <- Rtsne(X_subset, dims = 2, partial_pca = T, perplexity=30, verbose=TRUE, max_iter = 50)
+
+embedding <- tsne$Y
+plot(embedding)
+
+mx1 <-which.max(embedding[,1])
+embedding[mx1,]
+colnames(X)[mx1]
+
+mx2 <-which.min(embedding[,2])
+embedding[mx2,]
+colnames(X)[mx2]
+```
